@@ -711,6 +711,13 @@ void ble_server_start(ble_server_callbacks callbacks)
     ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_BLE));
     ESP_ERROR_CHECK(esp_bluedroid_init());
 	ESP_ERROR_CHECK(esp_bluedroid_enable());
+
+    // Set local MTU to max BLE 4.2 size for better throughput
+    esp_err_t local_mtu_ret = esp_ble_gatt_set_local_mtu(517);
+    if (local_mtu_ret) {
+        ESP_LOGE(BLE_TAG, "set local MTU failed, error code = %x", local_mtu_ret);
+    }
+
     ESP_ERROR_CHECK(esp_ble_gatts_register_callback(gatts_event_handler));
     ESP_ERROR_CHECK(esp_ble_gap_register_callback(gap_event_handler));
     ESP_ERROR_CHECK(esp_ble_gatts_app_register(ESP_SPP_APP_ID));
