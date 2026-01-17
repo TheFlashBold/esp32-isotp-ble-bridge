@@ -5,6 +5,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_task_wdt.h"
+#include "esp_timer.h"
 #include "ble_server.h"
 #include "constants.h"
 #include "led.h"

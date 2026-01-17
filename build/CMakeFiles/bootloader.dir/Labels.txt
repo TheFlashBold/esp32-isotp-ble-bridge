@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+/Users/tychoholzer/work/a2lxdf/esp32-isotp-ble-bridge/build/CMakeFiles/bootloader
+/Users/tychoholzer/work/a2lxdf/esp32-isotp-ble-bridge/build/CMakeFiles/bootloader.rule
+/Users/tychoholzer/work/a2lxdf/esp32-isotp-ble-bridge/build/CMakeFiles/bootloader-complete.rule
+/Users/tychoholzer/work/a2lxdf/esp32-isotp-ble-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+/Users/tychoholzer/work/a2lxdf/esp32-isotp-ble-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+/Users/tychoholzer/work/a2lxdf/esp32-isotp-ble-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+/Users/tychoholzer/work/a2lxdf/esp32-isotp-ble-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+/Users/tychoholzer/work/a2lxdf/esp32-isotp-ble-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+/Users/tychoholzer/work/a2lxdf/esp32-isotp-ble-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+/Users/tychoholzer/work/a2lxdf/esp32-isotp-ble-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule
