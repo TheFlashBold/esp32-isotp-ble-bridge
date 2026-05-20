@@ -15,8 +15,8 @@
 #define BLE_HEADER_ID					0xF1
 #define BLE_PARTIAL_ID					0xF2
 
-#define MAX_GAP_LENGTH					14
-#define DEFAULT_GAP_NAME          		"BLE_TO_ISOTP20"
+#define MAX_GAP_LENGTH					16
+#define DEFAULT_GAP_NAME          		"simos.app Dongle"
 
 //BLE command flags
 #define BLE_COMMAND_FLAG_PER_ENABLE		1
