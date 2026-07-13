@@ -50,13 +50,13 @@ static const uint16_t spp_service_uuid = 0xABF0;
 #define ESP_GATT_UUID_SPP_COMMAND_RECEIVE   0xABF3
 #define ESP_GATT_UUID_SPP_COMMAND_NOTIFY    0xABF4
 
-static uint8_t spp_adv_data[23] = {
+static uint8_t spp_adv_data[9 + MAX_GAP_LENGTH] = {
     /* Flags */
     0x02,0x01,0x06,
     /* Complete List of 16-bit Service Class UUIDs */
     0x03,0x03,0xF0,0xAB,
     /* Complete Local Name in advertising */
-    0x0F,0x09, 'B', 'L', 'E', '_', 'T', 'O', '_', 'I', 'S', 'O', 'T','P', '2', '0'
+    0x01,0x09
 };
 
 static char                 ble_gap_name[MAX_GAP_LENGTH+1]  = DEFAULT_GAP_NAME;
@@ -146,7 +146,10 @@ static const uint16_t character_declaration_uuid = ESP_GATT_UUID_CHAR_DECLARE;
 static const uint16_t character_client_config_uuid = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
 
 static const uint8_t char_prop_read_notify = ESP_GATT_CHAR_PROP_BIT_READ|ESP_GATT_CHAR_PROP_BIT_NOTIFY;
-static const uint8_t char_prop_read_write = ESP_GATT_CHAR_PROP_BIT_WRITE_NR|ESP_GATT_CHAR_PROP_BIT_READ;
+static const uint8_t char_prop_read_write =
+    ESP_GATT_CHAR_PROP_BIT_WRITE |
+    ESP_GATT_CHAR_PROP_BIT_WRITE_NR |
+    ESP_GATT_CHAR_PROP_BIT_READ;
 
 ///SPP Service - data receive characteristic, read&write without response
 static const uint16_t spp_data_receive_uuid = ESP_GATT_UUID_SPP_DATA_RECEIVE;
@@ -661,6 +664,8 @@ void ble_server_init()
     ble_task_mutex      = xSemaphoreCreateMutex();
     ble_settings_mutex  = xSemaphoreCreateMutex();
     spp_send_queue      = xQueueCreate(BLE_QUEUE_SIZE, sizeof(send_message_t));
+
+    ble_set_gap_name(DEFAULT_GAP_NAME, false);
 
     ESP_LOGI(BLE_TAG, "Init");
 }
