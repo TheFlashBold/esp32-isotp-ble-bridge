@@ -370,6 +370,7 @@ void send_task(void *pvParameters)
                             header->cmdSize = event.msg_length;
                             header->rxID = event.rxID;
                             header->txID = event.txID;
+                            header->cmdFlags = event.flags;
 
                             //Can we add more?
                             while (dataLength < (spp_mtu_size - 3 - sizeof(ble_header_t)))
@@ -400,6 +401,7 @@ void send_task(void *pvParameters)
                                             header->cmdSize = nextEvent.msg_length;
                                             header->rxID = nextEvent.rxID;
                                             header->txID = nextEvent.txID;
+                                            header->cmdFlags = nextEvent.flags;
 
                                             //free old data and replace with new
                                             free(data);

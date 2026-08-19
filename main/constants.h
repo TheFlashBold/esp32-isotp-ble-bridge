@@ -21,6 +21,14 @@ typedef int16_t							bool16;
 #define BRG_SETTING_BLE_MULTI_DELAY		6
 #define BRG_SETTING_PASSWORD			7
 #define BRG_SETTING_GAP					8
+#define BRG_SETTING_FIRMWARE_VERSION	21
+#define BRG_SETTING_CAPABILITIES		22
+
+// Version string returned to clients through BRG_SETTING_FIRMWARE_VERSION.
+#define BRIDGE_FIRMWARE_VERSION			"v1.10"
+
+// Capability bits returned by BRG_SETTING_CAPABILITIES.
+#define BRG_CAPABILITY_FULL_PACKET_ACK	(1UL << 0)
 
 #define TASK_STACK_SIZE					3072 //2048
 

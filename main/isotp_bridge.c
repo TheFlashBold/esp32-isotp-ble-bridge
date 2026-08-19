@@ -131,6 +131,41 @@ void send_packet(uint32_t txID, uint32_t rxID, uint8_t flags, const void* src, s
 	}
 }
 
+#define PACKET_ACK_PROTOCOL_VERSION	1
+#define PACKET_ACK_STATUS_ACCEPTED	0
+#define PACKET_ACK_STATUS_REJECTED	1
+#define PACKET_ACK_STATUS_REASSEMBLY_ERROR	2
+
+/*
+ * ATT Write Response only confirms that one BLE fragment reached the GATT
+ * server. This acknowledgement is sent after the complete bridge packet has
+ * been reconstructed and isotp_send() has accepted it on a matching CAN link.
+ * The ECU's UDS response remains the end-to-end acknowledgement.
+ */
+static void send_packet_ack(const ble_header_t* header, const uint8_t* data,
+							size_t available_size, uint8_t status)
+{
+	if (!header ||
+		(header->cmdFlags & BLE_COMMAND_FLAG_PACKET_ACK_REQUEST) == 0 ||
+		(header->cmdFlags & BLE_COMMAND_FLAG_SETTINGS) != 0) {
+		return;
+	}
+
+	uint8_t ack[6] = {
+		PACKET_ACK_PROTOCOL_VERSION,
+		status,
+		available_size > 0 && data ? data[0] : 0,
+		available_size > 1 && data ? data[1] : 0,
+		(uint8_t)(header->cmdSize & 0xFF),
+		(uint8_t)(header->cmdSize >> 8)
+	};
+
+	// Keep the IDs identical to the app-to-dongle bridge header so the app can
+	// correlate acknowledgements even when multiple ECU modules are active.
+	send_packet(header->txID, header->rxID, BLE_COMMAND_FLAG_PACKET_ACK,
+				ack, sizeof(ack));
+}
+
 /* --------------------------- ISOTP Tasks -------------------------------------- */
 
 static void isotp_processing_task(void *arg)
@@ -212,22 +247,39 @@ static void isotp_send_queue_task(void *arg)
 			if (xQueueReceive(isotp_send_message_queue, &msg, pdMS_TO_TICKS(TIMEOUT_LONG)) == pdTRUE) {
 				if (isotp_allow_run_tasks()) {
 					ESP_LOGD(BRIDGE_TAG, "isotp_send_queue_task: sending message with %d size (rx id: %04x / tx id: %04x)", msg.msg_length, msg.rxID, msg.txID);
+					bool16 found_container = false;
+					int send_result = ISOTP_RET_ERROR;
 					for (uint16_t i = 0; i < NUM_ISOTP_LINK_CONTAINERS; i++) {
-						bool16 found_container = false;
 						IsoTpLinkContainer* isotp_link_container = &isotp_link_containers[i];
 						tMUTEX(isotp_link_container->data_mutex);
 							if (msg.txID == isotp_link_container->link.receive_arbitration_id &&
 								msg.rxID == isotp_link_container->link.send_arbitration_id) {
 								ESP_LOGD(BRIDGE_TAG, "container match [%d]", i);
 								isotp_link_container_id = i;
-								isotp_send(&isotp_link_container->link, msg.buffer, msg.msg_length);
-								xSemaphoreGive(isotp_link_container->wait_for_isotp_data_sem);
+								send_result = isotp_send(&isotp_link_container->link, msg.buffer, msg.msg_length);
+								if (send_result == ISOTP_RET_OK) {
+									xSemaphoreGive(isotp_link_container->wait_for_isotp_data_sem);
+								}
 								found_container = true;
 							}
 						rMUTEX(isotp_link_container->data_mutex);
 
 						if(found_container)
 							break;
+					}
+
+					if (msg.flags & BLE_COMMAND_FLAG_PACKET_ACK_REQUEST) {
+						ble_header_t ack_header = {
+							.hdID = BLE_HEADER_ID,
+							.cmdFlags = msg.flags,
+							.rxID = msg.txID,
+							.txID = msg.rxID,
+							.cmdSize = msg.msg_length
+						};
+						uint8_t ack_status = found_container && send_result == ISOTP_RET_OK
+							? PACKET_ACK_STATUS_ACCEPTED
+							: PACKET_ACK_STATUS_REJECTED;
+						send_packet_ack(&ack_header, msg.buffer, msg.msg_length, ack_status);
 					}
 					free(msg.buffer);
 				}
@@ -439,6 +491,25 @@ bool16 parse_packet(ble_header_t* header, uint8_t* data)
 								ESP_LOGI(BRIDGE_TAG, "Set GAP [%s]", str);
 							}
 							break;
+						case BRG_SETTING_FIRMWARE_VERSION:
+							{
+								static const char version[] = BRIDGE_FIRMWARE_VERSION;
+								send_packet(0, 0,
+									BLE_COMMAND_FLAG_SETTINGS | BRG_SETTING_FIRMWARE_VERSION,
+									version, sizeof(version) - 1);
+								ESP_LOGI(BRIDGE_TAG, "Sending firmware version [%s]", version);
+							}
+							break;
+						case BRG_SETTING_CAPABILITIES:
+							{
+								uint32_t capabilities = BRG_CAPABILITY_FULL_PACKET_ACK;
+								send_packet(0, 0,
+									BLE_COMMAND_FLAG_SETTINGS | BRG_SETTING_CAPABILITIES,
+									&capabilities, sizeof(capabilities));
+								ESP_LOGI(BRIDGE_TAG, "Sending capabilities [%08lX]",
+									(unsigned long)capabilities);
+							}
+							break;
 					}
 					return true;
 				}
@@ -594,12 +665,15 @@ bool16 parse_packet(ble_header_t* header, uint8_t* data)
 					msg.msg_length = header->cmdSize;
 					msg.rxID = header->txID;
 					msg.txID = header->rxID;
+					msg.flags = header->cmdFlags;
 					msg.buffer = malloc(header->cmdSize);
 					if (msg.buffer) {
 						memcpy(msg.buffer, data, header->cmdSize);
 
 						if (xQueueSend(isotp_send_message_queue, &msg, pdMS_TO_TICKS(TIMEOUT_NORMAL)) != pdTRUE) {
 							free(msg.buffer);
+							ESP_LOGE(BRIDGE_TAG, "parse_packet: ISO-TP send queue full");
+							return false;
 						}
 					}
 					else {
@@ -646,6 +720,11 @@ void packet_received(const void* src, size_t size)
 	tMUTEX(isotp_receive_mutex);
 		//store current data pointer
 		uint8_t* data = (uint8_t*)src;
+		if (!data || size < 2) {
+			ESP_LOGE(BRIDGE_TAG, "Ignoring undersized bridge packet [%u]",
+				(unsigned int)size);
+			goto release_mutex;
+		}
 
 		//Are we in Split packet mode?
 		if(split_enabled && data[0] == BLE_PARTIAL_ID) {
@@ -657,6 +736,8 @@ void packet_received(const void* src, size_t size)
 					uint8_t* new_data = malloc(split_length + size - 2);
 					if (new_data == NULL) {
 						ESP_LOGI(BRIDGE_TAG, "malloc error %s %d", __func__, __LINE__);
+						send_packet_ack(&split_header, split_data, split_length,
+							PACKET_ACK_STATUS_REASSEMBLY_ERROR);
 						split_clear();
 						goto release_mutex;
 					}
@@ -671,22 +752,32 @@ void packet_received(const void* src, size_t size)
 					if (split_length == split_header.cmdSize)
 					{   //Messsage size matches
 						ESP_LOGI(BRIDGE_TAG, "Split packet size matches [%02X]", split_length);
-						parse_packet(&split_header, split_data);
+						bool16 accepted = parse_packet(&split_header, split_data);
+						if (!accepted) {
+							send_packet_ack(&split_header, split_data, split_length,
+								PACKET_ACK_STATUS_REJECTED);
+						}
 						split_clear();
 					}
 					else if (split_length > split_header.cmdSize)
 					{   //Message size does not match
 						ESP_LOGI(BRIDGE_TAG, "Command size is larger than packet size [%02X, %02X]", split_header.cmdSize, split_length);
+						send_packet_ack(&split_header, split_data, split_length,
+							PACKET_ACK_STATUS_REASSEMBLY_ERROR);
 						split_clear();
 					}
 				} else {
 					//error delete and forget
 					ESP_LOGI(BRIDGE_TAG, "Splitpacket data is invalid");
+					send_packet_ack(&split_header, split_data, split_length,
+						PACKET_ACK_STATUS_REASSEMBLY_ERROR);
 					split_clear();
 				}
 			} else {
 				//error delete and forget
 				ESP_LOGI(BRIDGE_TAG, "Splitpacket out of order [%02X, %02X]", data[1], split_count);
+				send_packet_ack(&split_header, split_data, split_length,
+					PACKET_ACK_STATUS_REASSEMBLY_ERROR);
 				split_clear();
 			}
 		} else {
@@ -720,6 +811,8 @@ void packet_received(const void* src, size_t size)
 						split_data = malloc(size);
 						if(split_data == NULL){
 							ESP_LOGI(BRIDGE_TAG, "malloc error %s %d", __func__, __LINE__);
+							send_packet_ack(header, data, size,
+								PACKET_ACK_STATUS_REASSEMBLY_ERROR);
 							split_clear();
 							goto release_mutex;
 						}
@@ -735,7 +828,12 @@ void packet_received(const void* src, size_t size)
 				}
 
 				//looks good, parse the packet
-				if(parse_packet(header, data))
+				bool16 accepted = parse_packet(header, data);
+				if (!accepted) {
+					send_packet_ack(header, data, header->cmdSize,
+						PACKET_ACK_STATUS_REJECTED);
+				}
+				if(accepted)
 				{
 					data += header->cmdSize;
 					size -= header->cmdSize;

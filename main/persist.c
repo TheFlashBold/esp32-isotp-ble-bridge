@@ -283,6 +283,7 @@ bool16 persist_send(persist_t* pPersist)
 		msg.msg_length = pMsg->msg_length;
 		msg.rxID = pMsg->rxID;
 		msg.txID = pMsg->txID;
+		msg.flags = 0;
 	rMUTEX(pPersist->data_mutex);
 
 	//if we fail to place message into the queue free the memory!
