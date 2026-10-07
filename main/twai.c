@@ -12,6 +12,7 @@
 #include "constants.h"
 #include "connection_handler.h"
 #include "twai.h"
+#include "isotp_bridge.h"
 
 #define TWAI_TAG 		"TWAI"
 
@@ -179,7 +180,17 @@ void twai_receive_task(void *arg)
 			if (twai_receive(&twai_rx_msg, pdMS_TO_TICKS(TIMEOUT_LONG)) == ESP_OK) {
 				ESP_LOGD(TWAI_TAG, "Received TWAI %08X and length %08X", twai_rx_msg.identifier, twai_rx_msg.data_length_code);
 				ch_take_can_timer_sem();
-		
+
+				// Raw CAN mode: promiscuously forward EVERY frame to the host
+				// (full arbitration ID, IDE flag, DLC and data) and skip the
+				// ISO-TP routing entirely. The acceptance filter is already
+				// TWAI_FILTER_CONFIG_ACCEPT_ALL() so no filter change is needed.
+				if (bridge_raw_mode_enabled()) {
+					bridge_forward_raw_frame(&twai_rx_msg);
+					esp_task_wdt_reset();
+					continue;
+				}
+
 				if (twai_rx_msg.identifier < 0x500) {
 					esp_task_wdt_reset();
 					continue;

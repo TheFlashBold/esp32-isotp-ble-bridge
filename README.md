@@ -18,6 +18,14 @@ https://github.com/bri3d/VW_Flash<br>
 
 4) Some other J2534 software
 
+# Raw CAN mode
+
+In addition to the ISO-TP bridge, the firmware supports an opt-in **raw CAN mode** for
+sending/receiving raw 8-byte CAN frames (including extended 29-bit IDs) and promiscuous
+bus sniffing — used to talk to non-ISO-TP channels such as a VW EPS CCP/XCP measurement
+channel. It defaults OFF and does not affect ISO-TP/flashing. See
+[RAW_CAN_MODE.md](RAW_CAN_MODE.md) for the exact BLE wire protocol.
+
 # Supported hardware
 
 1) simos.app dongle <br>

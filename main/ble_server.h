@@ -23,10 +23,18 @@
 #define BLE_COMMAND_FLAG_PER_CLEAR		2
 #define BLE_COMMAND_FLAG_PER_ADD		4
 #define BLE_COMMAND_FLAG_SPLIT_PK		8
-#define BLE_COMMAND_FLAG_PACKET_ACK_REQUEST	16
-#define BLE_COMMAND_FLAG_PACKET_ACK		32
+#define BLE_COMMAND_FLAG_RAW			16		/* Payload is a raw CAN frame (TX host->device, RX device->host) */
 #define BLE_COMMAND_FLAG_SETTINGS_GET	64
 #define BLE_COMMAND_FLAG_SETTINGS		128
+
+// Raw CAN payload layout (in the data portion that follows the 8-byte ble_header_t):
+//   byte 0      : raw flags (see RAW_CAN_FLAG_*)
+//   byte 1      : DLC (0..8)
+//   bytes 2..5  : arbitration ID, little-endian uint32 (11-bit or 29-bit)
+//   bytes 6..   : DLC data bytes
+// cmdSize for a raw frame is therefore RAW_CAN_HEADER_LEN + DLC.
+#define RAW_CAN_HEADER_LEN				6		/* flags(1) + dlc(1) + id(4) before data */
+#define RAW_CAN_FLAG_EXTENDED			0x01	/* byte0 bit0: 1 = 29-bit extended ID, 0 = 11-bit standard */
 
 //BLE send queue size
 #define BLE_QUEUE_SIZE					64

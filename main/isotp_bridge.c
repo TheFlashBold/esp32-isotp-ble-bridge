@@ -37,6 +37,10 @@ static uint16_t				split_enabled 				= false;
 static uint8_t 				split_count 				= 0;
 static uint16_t				split_length 				= 0;
 static uint8_t*				split_data 					= NULL;
+// Raw CAN mode flag. Single writer (BLE/UART command task via bridge_set_raw_mode)
+// and single reader (TWAI RX task via bridge_raw_mode_enabled); a bool read/write
+// is atomic on the ESP32 so no mutex is needed in the RX hot path. Defaults OFF.
+static volatile bool16		raw_mode_enabled			= false;
 #ifdef PASSWORD_CHECK
 static bool16				passwordChecked				= false;
 #endif
@@ -131,39 +135,68 @@ void send_packet(uint32_t txID, uint32_t rxID, uint8_t flags, const void* src, s
 	}
 }
 
-#define PACKET_ACK_PROTOCOL_VERSION	1
-#define PACKET_ACK_STATUS_ACCEPTED	0
-#define PACKET_ACK_STATUS_REJECTED	1
-#define PACKET_ACK_STATUS_REASSEMBLY_ERROR	2
+/* --------------------------- Raw CAN mode ------------------------------- */
 
-/*
- * ATT Write Response only confirms that one BLE fragment reached the GATT
- * server. This acknowledgement is sent after the complete bridge packet has
- * been reconstructed and isotp_send() has accepted it on a matching CAN link.
- * The ECU's UDS response remains the end-to-end acknowledgement.
- */
-static void send_packet_ack(const ble_header_t* header, const uint8_t* data,
-							size_t available_size, uint8_t status)
+void bridge_set_raw_mode(bool16 on)
 {
-	if (!header ||
-		(header->cmdFlags & BLE_COMMAND_FLAG_PACKET_ACK_REQUEST) == 0 ||
-		(header->cmdFlags & BLE_COMMAND_FLAG_SETTINGS) != 0) {
-		return;
+	raw_mode_enabled = on ? true : false;
+	ESP_LOGI(BRIDGE_TAG, "Raw CAN mode %s", raw_mode_enabled ? "ENABLED" : "disabled");
+}
+
+bool16 bridge_raw_mode_enabled()
+{
+	return raw_mode_enabled;
+}
+
+// Forward a single received CAN frame to the host as a raw-RX notification.
+// Called from the TWAI RX task for every frame while raw mode is enabled.
+// Layout matches RAW_CAN_* in ble_server.h: flags(1) dlc(1) id(LE32) data(dlc).
+void bridge_forward_raw_frame(const twai_message_t* msg)
+{
+	uint8_t dlc = msg->data_length_code;
+	if (dlc > 8)
+		dlc = 8;
+
+	uint8_t payload[RAW_CAN_HEADER_LEN + 8];
+	payload[0] = msg->extd ? RAW_CAN_FLAG_EXTENDED : 0;
+	payload[1] = dlc;
+	payload[2] = (uint8_t)(msg->identifier & 0xFF);
+	payload[3] = (uint8_t)((msg->identifier >> 8) & 0xFF);
+	payload[4] = (uint8_t)((msg->identifier >> 16) & 0xFF);
+	payload[5] = (uint8_t)((msg->identifier >> 24) & 0xFF);
+	memcpy(payload + RAW_CAN_HEADER_LEN, msg->data, dlc);
+
+	send_packet(0, 0, BLE_COMMAND_FLAG_RAW, payload, RAW_CAN_HEADER_LEN + dlc);
+}
+
+// Decode a host->device raw-TX payload and transmit it on the bus.
+// `data` points at the raw payload (past the 8-byte ble_header_t), `size` is cmdSize.
+static bool16 bridge_raw_transmit(const uint8_t* data, uint16_t size)
+{
+	if (size < RAW_CAN_HEADER_LEN) {
+		ESP_LOGW(BRIDGE_TAG, "Raw TX payload too small [%u]", (unsigned)size);
+		return false;
 	}
 
-	uint8_t ack[6] = {
-		PACKET_ACK_PROTOCOL_VERSION,
-		status,
-		available_size > 0 && data ? data[0] : 0,
-		available_size > 1 && data ? data[1] : 0,
-		(uint8_t)(header->cmdSize & 0xFF),
-		(uint8_t)(header->cmdSize >> 8)
-	};
+	uint8_t raw_flags = data[0];
+	uint8_t dlc       = data[1];
+	if (dlc > 8)
+		dlc = 8;
+	if (size < (uint16_t)(RAW_CAN_HEADER_LEN + dlc)) {
+		ESP_LOGW(BRIDGE_TAG, "Raw TX payload shorter than DLC [%u < %u]", (unsigned)size, RAW_CAN_HEADER_LEN + dlc);
+		return false;
+	}
 
-	// Keep the IDs identical to the app-to-dongle bridge header so the app can
-	// correlate acknowledgements even when multiple ECU modules are active.
-	send_packet(header->txID, header->rxID, BLE_COMMAND_FLAG_PACKET_ACK,
-				ack, sizeof(ack));
+	twai_message_t frame = {0};
+	frame.extd = (raw_flags & RAW_CAN_FLAG_EXTENDED) ? 1 : 0;
+	frame.identifier = (uint32_t)data[2] | ((uint32_t)data[3] << 8) |
+	                   ((uint32_t)data[4] << 16) | ((uint32_t)data[5] << 24);
+	frame.data_length_code = dlc;
+	memcpy(frame.data, data + RAW_CAN_HEADER_LEN, dlc);
+
+	ESP_LOGI(BRIDGE_TAG, "Raw TX id=%08X ext=%d dlc=%d", frame.identifier, frame.extd, dlc);
+	twai_send(&frame);
+	return true;
 }
 
 /* --------------------------- ISOTP Tasks -------------------------------------- */
@@ -266,20 +299,6 @@ static void isotp_send_queue_task(void *arg)
 
 						if(found_container)
 							break;
-					}
-
-					if (msg.flags & BLE_COMMAND_FLAG_PACKET_ACK_REQUEST) {
-						ble_header_t ack_header = {
-							.hdID = BLE_HEADER_ID,
-							.cmdFlags = msg.flags,
-							.rxID = msg.txID,
-							.txID = msg.rxID,
-							.cmdSize = msg.msg_length
-						};
-						uint8_t ack_status = found_container && send_result == ISOTP_RET_OK
-							? PACKET_ACK_STATUS_ACCEPTED
-							: PACKET_ACK_STATUS_REJECTED;
-						send_packet_ack(&ack_header, msg.buffer, msg.msg_length, ack_status);
 					}
 					free(msg.buffer);
 				}
@@ -423,6 +442,15 @@ void split_clear()
 bool16 parse_packet(ble_header_t* header, uint8_t* data)
 {
 	if(get_password_checked()) {
+		//Is this a raw CAN frame? (opt-in raw mode must be enabled)
+		if(header->cmdFlags & BLE_COMMAND_FLAG_RAW)
+		{
+			if(bridge_raw_mode_enabled())
+				return bridge_raw_transmit(data, header->cmdSize);
+
+			ESP_LOGW(BRIDGE_TAG, "Raw frame received but raw mode is off - ignoring");
+			return false;
+		}
 		//Is client trying to set a setting?
 		if(header->cmdFlags & BLE_COMMAND_FLAG_SETTINGS)
 		{
@@ -491,6 +519,13 @@ bool16 parse_packet(ble_header_t* header, uint8_t* data)
 								ESP_LOGI(BRIDGE_TAG, "Set GAP [%s]", str);
 							}
 							break;
+						case BRG_SETTING_RAW_MODE:
+							{
+								uint8_t state = bridge_raw_mode_enabled() ? 1 : 0;
+								send_packet(0, 0, BLE_COMMAND_FLAG_SETTINGS | BRG_SETTING_RAW_MODE, &state, sizeof(uint8_t));
+								ESP_LOGI(BRIDGE_TAG, "Sending raw mode [%02X]", state);
+							}
+							break;
 						case BRG_SETTING_FIRMWARE_VERSION:
 							{
 								static const char version[] = BRIDGE_FIRMWARE_VERSION;
@@ -498,16 +533,6 @@ bool16 parse_packet(ble_header_t* header, uint8_t* data)
 									BLE_COMMAND_FLAG_SETTINGS | BRG_SETTING_FIRMWARE_VERSION,
 									version, sizeof(version) - 1);
 								ESP_LOGI(BRIDGE_TAG, "Sending firmware version [%s]", version);
-							}
-							break;
-						case BRG_SETTING_CAPABILITIES:
-							{
-								uint32_t capabilities = BRG_CAPABILITY_FULL_PACKET_ACK;
-								send_packet(0, 0,
-									BLE_COMMAND_FLAG_SETTINGS | BRG_SETTING_CAPABILITIES,
-									&capabilities, sizeof(capabilities));
-								ESP_LOGI(BRIDGE_TAG, "Sending capabilities [%08lX]",
-									(unsigned long)capabilities);
 							}
 							break;
 					}
@@ -614,6 +639,14 @@ bool16 parse_packet(ble_header_t* header, uint8_t* data)
 							eeprom_write_str(BLE_GAP_KEY, str);
 							eeprom_commit();
 							ch_give_sleep_sem();
+							return true;
+						}
+						break;
+					case BRG_SETTING_RAW_MODE:
+						//check size
+						if(header->cmdSize == sizeof(uint8_t))
+						{
+							bridge_set_raw_mode(data[0] ? true : false);
 							return true;
 						}
 						break;
@@ -736,8 +769,6 @@ void packet_received(const void* src, size_t size)
 					uint8_t* new_data = malloc(split_length + size - 2);
 					if (new_data == NULL) {
 						ESP_LOGI(BRIDGE_TAG, "malloc error %s %d", __func__, __LINE__);
-						send_packet_ack(&split_header, split_data, split_length,
-							PACKET_ACK_STATUS_REASSEMBLY_ERROR);
 						split_clear();
 						goto release_mutex;
 					}
@@ -752,32 +783,22 @@ void packet_received(const void* src, size_t size)
 					if (split_length == split_header.cmdSize)
 					{   //Messsage size matches
 						ESP_LOGI(BRIDGE_TAG, "Split packet size matches [%02X]", split_length);
-						bool16 accepted = parse_packet(&split_header, split_data);
-						if (!accepted) {
-							send_packet_ack(&split_header, split_data, split_length,
-								PACKET_ACK_STATUS_REJECTED);
-						}
+						parse_packet(&split_header, split_data);
 						split_clear();
 					}
 					else if (split_length > split_header.cmdSize)
 					{   //Message size does not match
 						ESP_LOGI(BRIDGE_TAG, "Command size is larger than packet size [%02X, %02X]", split_header.cmdSize, split_length);
-						send_packet_ack(&split_header, split_data, split_length,
-							PACKET_ACK_STATUS_REASSEMBLY_ERROR);
 						split_clear();
 					}
 				} else {
 					//error delete and forget
 					ESP_LOGI(BRIDGE_TAG, "Splitpacket data is invalid");
-					send_packet_ack(&split_header, split_data, split_length,
-						PACKET_ACK_STATUS_REASSEMBLY_ERROR);
 					split_clear();
 				}
 			} else {
 				//error delete and forget
 				ESP_LOGI(BRIDGE_TAG, "Splitpacket out of order [%02X, %02X]", data[1], split_count);
-				send_packet_ack(&split_header, split_data, split_length,
-					PACKET_ACK_STATUS_REASSEMBLY_ERROR);
 				split_clear();
 			}
 		} else {
@@ -811,8 +832,6 @@ void packet_received(const void* src, size_t size)
 						split_data = malloc(size);
 						if(split_data == NULL){
 							ESP_LOGI(BRIDGE_TAG, "malloc error %s %d", __func__, __LINE__);
-							send_packet_ack(header, data, size,
-								PACKET_ACK_STATUS_REASSEMBLY_ERROR);
 							split_clear();
 							goto release_mutex;
 						}
@@ -828,12 +847,7 @@ void packet_received(const void* src, size_t size)
 				}
 
 				//looks good, parse the packet
-				bool16 accepted = parse_packet(header, data);
-				if (!accepted) {
-					send_packet_ack(header, data, header->cmdSize,
-						PACKET_ACK_STATUS_REJECTED);
-				}
-				if(accepted)
+				if(parse_packet(header, data))
 				{
 					data += header->cmdSize;
 					size -= header->cmdSize;

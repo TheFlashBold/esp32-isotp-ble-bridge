@@ -11,19 +11,21 @@
  */
 #define ISO_TP_DEFAULT_ST_MIN       0
 
-/* This parameter indicate how many FC N_PDU WTs can be transmitted by the 
- * receiver in a row.
+/* Maximum number of consecutive FC.Wait frames accepted while transmitting.
+ * Each valid Wait frame refreshes N_Bs. Eight waits keep the transport bounded
+ * while allowing a slow gateway/ECU to remain inside VW_Flash's 10 s response
+ * window.
  */
-#define ISO_TP_MAX_WFT_NUMBER       1
+#define ISO_TP_MAX_WFT_NUMBER       8
 
-/* Private: The default timeout to use when waiting for a response during a
- * multi-frame send or receive.
+/* N_Bs/N_Cr timeout in microseconds. The previous 100 ms window was too short
+ * for slow or busy vehicle networks and could abort a 4095-byte TransferData
+ * request inside the dongle before the host saw an ECU response.
  */
-#define ISO_TP_DEFAULT_RESPONSE_TIMEOUT 100000
+#define ISO_TP_DEFAULT_RESPONSE_TIMEOUT 1000000
 
 /* Private: Determines if by default, padding is added to ISO-TP message frames.
  */
 #define ISO_TP_FRAME_PADDING
 
 #endif
-

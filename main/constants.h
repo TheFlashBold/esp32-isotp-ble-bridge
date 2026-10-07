@@ -21,14 +21,11 @@ typedef int16_t							bool16;
 #define BRG_SETTING_BLE_MULTI_DELAY		6
 #define BRG_SETTING_PASSWORD			7
 #define BRG_SETTING_GAP					8
+#define BRG_SETTING_RAW_MODE			9	/* Raw CAN mode toggle (promiscuous RX + raw TX). 1 byte payload: 0=off, 1=on */
 #define BRG_SETTING_FIRMWARE_VERSION	21
-#define BRG_SETTING_CAPABILITIES		22
 
 // Version string returned to clients through BRG_SETTING_FIRMWARE_VERSION.
-#define BRIDGE_FIRMWARE_VERSION			"v1.10"
-
-// Capability bits returned by BRG_SETTING_CAPABILITIES.
-#define BRG_CAPABILITY_FULL_PACKET_ACK	(1UL << 0)
+#define BRIDGE_FIRMWARE_VERSION			"v1.12"
 
 #define TASK_STACK_SIZE					3072 //2048
 
@@ -96,6 +93,6 @@ typedef int16_t							bool16;
 #define PERSIST_COUNT					2
 #define PERSIST_MAX_MESSAGE				64
 #define PERSIST_DEFAULT_MESSAGE_DELAY	20
-#define PERSIST_DEFAULT_QUEUE_DELAY		10
+#define PERSIST_DEFAULT_QUEUE_DELAY		0
 
 #endif

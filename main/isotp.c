@@ -417,6 +417,11 @@ void isotp_on_can_message(IsoTpLink *link, uint8_t *data, uint16_t len) {
                 /* wait */
                 else if (PCI_FLOW_STATUS_WAIT == message.as.flow_control.FS) {
                     link->send_wtf_count += 1;
+                    isotp_user_debug(
+                        "isotp_on_can_message: FC.Wait %u/%u, N_Bs refreshed\n",
+                        link->send_wtf_count,
+                        ISO_TP_MAX_WFT_NUMBER
+                    );
                     /* wait exceed allowed count */
                     if (link->send_wtf_count > ISO_TP_MAX_WFT_NUMBER) {
                         link->send_protocol_result  = ISOTP_PROTOCOL_RESULT_WFT_OVRN;
@@ -432,8 +437,14 @@ void isotp_on_can_message(IsoTpLink *link, uint8_t *data, uint16_t len) {
 						link->send_bs_remain = message.as.flow_control.BS;
                     }
 					link->send_st_min       = link->stmin_override ? link->stmin_override : stmin_to_us(message.as.flow_control.STmin);
-                    link->send_timer_st     = isotp_time + link->send_st_min;
+					link->send_timer_st     = isotp_time + link->send_st_min;
                     link->send_wtf_count    = 0;
+                }
+
+                /* reserved/invalid flow status */
+                else {
+                    link->send_protocol_result = ISOTP_PROTOCOL_RESULT_INVALID_FS;
+                    link->send_status = ISOTP_SEND_STATUS_ERROR;
                 }
             }
             break;

@@ -42,6 +42,15 @@
 #define DEFAULT_DELAY_SEND					0
 #define DEFAULT_DELAY_MULTI					0
 
+// iOS has no public equivalent of Android's requestConnectionPriority(HIGH).
+// Request the Apple-compatible 15 ms special case from the peripheral so BLE
+// notifications can carry the requested 50 Hz logging stream instead of being
+// capped by a slow central-selected connection interval.
+#define LOGGING_CONN_INTERVAL_MIN			0x0C
+#define LOGGING_CONN_INTERVAL_MAX			0x0C
+#define LOGGING_CONN_LATENCY				0
+#define LOGGING_CONN_TIMEOUT				400
+
 /// SPP Service
 static const uint16_t spp_service_uuid = 0xABF0;
 /// Characteristic UUID
@@ -499,6 +508,17 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
 			ESP_LOGE(BLE_TAG, "Advertising start failed: %s", esp_err_to_name(err));
         }
         break;
+    case ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT:
+        ESP_LOGI(
+            BLE_TAG,
+            "Connection params status=%d interval=%u (%.2f ms) latency=%u timeout=%u",
+            param->update_conn_params.status,
+            param->update_conn_params.conn_int,
+            param->update_conn_params.conn_int * 1.25f,
+            param->update_conn_params.latency,
+            param->update_conn_params.timeout
+        );
+        break;
     default:
         break;
     }
@@ -581,6 +601,26 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
 			    is_connected = true;
             rMUTEX(ble_settings_mutex);
 			memcpy(&spp_remote_bda,&p_data->connect.remote_bda,sizeof(esp_bd_addr_t));
+
+            esp_ble_conn_update_params_t conn_params = {0};
+            memcpy(
+                conn_params.bda,
+                p_data->connect.remote_bda,
+                sizeof(esp_bd_addr_t)
+            );
+            conn_params.min_int = LOGGING_CONN_INTERVAL_MIN;
+            conn_params.max_int = LOGGING_CONN_INTERVAL_MAX;
+            conn_params.latency = LOGGING_CONN_LATENCY;
+            conn_params.timeout = LOGGING_CONN_TIMEOUT;
+            esp_err_t conn_params_result =
+                esp_ble_gap_update_conn_params(&conn_params);
+            if (conn_params_result != ESP_OK) {
+                ESP_LOGW(
+                    BLE_TAG,
+                    "Unable to request logging connection interval: %s",
+                    esp_err_to_name(conn_params_result)
+                );
+            }
 			xSemaphoreGive(ble_congested);
             ESP_LOGI(BLE_TAG, "GATTS Connected");
         	break;
