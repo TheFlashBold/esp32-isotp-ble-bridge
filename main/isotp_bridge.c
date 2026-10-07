@@ -443,7 +443,9 @@ bool16 parse_packet(ble_header_t* header, uint8_t* data)
 {
 	if(get_password_checked()) {
 		//Is this a raw CAN frame? (opt-in raw mode must be enabled)
-		if(header->cmdFlags & BLE_COMMAND_FLAG_RAW)
+		//Settings carry their id in the low flag bits, so ids 16..31 (e.g.
+		//FIRMWARE_VERSION 21) also have the RAW bit set - never treat those as raw.
+		if(!(header->cmdFlags & BLE_COMMAND_FLAG_SETTINGS) && (header->cmdFlags & BLE_COMMAND_FLAG_RAW))
 		{
 			if(bridge_raw_mode_enabled())
 				return bridge_raw_transmit(data, header->cmdSize);
